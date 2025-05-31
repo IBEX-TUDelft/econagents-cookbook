@@ -1,0 +1,32 @@
+# Make Your Contribution Decision
+
+## Current Game State
+
+- Your endowment: {{ private_information.endowment }} points
+- Number of players: {{ public_information.num_players }}
+- Participant ID: {{ meta.participant_id }}
+
+## Game Rules Reminder
+
+You can contribute any amount from 0 to {{ private_information.endowment }} points to the group fund.
+
+- All contributions will be doubled and split equally among all players
+- You keep any points you don't contribute
+- Your final payoff = (points you kept) + (your share of doubled group fund)
+
+## Your Decision
+
+Please decide how many points you want to contribute to the group fund.
+
+**Output format:** You must respond with a JSON object containing only your contribution amount:
+
+```json
+{
+  "type": "contribution",
+  "contribution": <contribution_amount>
+  "participant_code": {{ meta.participant_code }}
+  "participant_id": {{ meta.participant_id }}
+}
+```
+
+Replace <contribution_amount> with your chosen contribution amount (between 0 and {{ private_information.endowment }}).
