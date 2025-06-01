@@ -41,8 +41,8 @@ class PublicGoodsManager(TurnBasedPhaseManager):
                 participant_code=participant_code,
             ),
             agent_role=PublicGoodsPlayer(),
-            phase_transition_event="round-started",
-            phase_identifier_key="round",
+            phase_transition_event="phase-transition",
+            phase_identifier_key="phase",
         )
         self.participant_code = participant_code
         self.participant_id = participant_id

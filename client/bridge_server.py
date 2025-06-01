@@ -21,7 +21,6 @@ class OTreeBridge:
 
     def __init__(
         self,
-        rounds: List[str],
         otree_url: str = "http://localhost:8000",
     ):
         self.otree_url = otree_url
@@ -31,7 +30,9 @@ class OTreeBridge:
         self.participant_urls: Dict[str, str] = {}
         self.session_participants: Dict[str, Set[str]] = {}
         self.form_fields: Dict[str, List[str]] = {}
-        self.rounds = rounds
+        self.participant_phases: Dict[
+            str, int
+        ] = {}  # Track current phase number per participant
 
     async def handle_websocket(self, websocket: ServerConnection):
         """Handle incoming WebSocket connections from econagents clients."""
@@ -93,6 +94,9 @@ class OTreeBridge:
             http_session.headers.update({"User-Agent": "oTree econagents bridge"})
             self.participant_sessions[participant_code] = http_session
 
+            # Initialize phase counter
+            self.participant_phases[participant_code] = 0
+
             await self.initialize_participant(participant_code, participant_id)
 
             logger.info(
@@ -135,16 +139,17 @@ class OTreeBridge:
                 logger.info(
                     f"Task {task_data} submitted for participant {participant_code}"
                 )
-                await self.wait_for_results_and_notify(
+                # Continue navigating through pages
+                await self.navigate_experiment(
                     participant_code,
                     participant_id,  # type: ignore
                 )
             else:
-                await self.send_error(websocket, "Failed to submit contribution")
+                await self.send_error(websocket, "Failed to submit task")
 
         except Exception as e:
-            logger.exception(f"Error handling contribution: {e}")
-            await self.send_error(websocket, f"Error submitting contribution: {str(e)}")
+            logger.exception(f"Error handling task: {e}")
+            await self.send_error(websocket, f"Error submitting task: {str(e)}")
 
     def get_participant_configs(self, session_code: str) -> list:
         """Get participant configurations for econagents from the most recent or specified session."""
@@ -178,39 +183,36 @@ class OTreeBridge:
         if not task_url.startswith("http"):
             task_url = f"{self.otree_url}{task_url}"
 
-        logger.info(
-            f"Participant {participant_code} redirected to task page: {task_url}"
-        )
+        logger.info(f"Participant {participant_code} redirected to page: {task_url}")
         response_task = await asyncio.to_thread(
             http_session.get, task_url, allow_redirects=False, timeout=10
         )
         response_task.raise_for_status()
 
-        if not hasattr(self, "participant_urls"):
-            self.participant_urls = {}
         self.participant_urls[participant_code] = task_url
 
-        if not hasattr(self, "form_fields"):
-            self.form_fields = {}
+        # Clear previous form fields
         self.form_fields[participant_code] = []
 
         soup = BeautifulSoup(response_task.text, "html.parser")
         otree_data = soup.find("script", id="otree-data")
 
+        # Extract form fields
         for field in soup.select("._formfield input"):
-            self.form_fields[participant_code].append(field.get("name"))  # type: ignore
+            field_name = field.get("name")
+            if field_name:
+                self.form_fields[participant_code].append(str(field_name))
 
-        try:
-            round_number = self.rounds.index(url.split("/")[-2]) + 1
-        except ValueError:
-            logger.error(f"Unknown round: {url.split('/')[-2]}")
-            round_number = 0
+        # If there are form fields, this is an action page
+        if self.form_fields[participant_code] and otree_data:
+            # Increment phase number
+            self.participant_phases[participant_code] += 1
+            phase_number = self.participant_phases[participant_code]
 
-        if otree_data:
-            state_data = otree_data.text
-            state_data = json.loads(state_data)
-            state_data["round"] = round_number
-            await self.send_game_state(participant_code, participant_id, state_data)
+            state_data = json.loads(otree_data.text)
+            state_data["phase"] = phase_number
+            state_data["required_fields"] = self.form_fields[participant_code]
+            await self.send_phase_update(participant_code, participant_id, state_data)
 
     async def initialize_participant(self, participant_code: str, participant_id: int):
         """Initialize participant in oTree and navigate to the contribution page."""
@@ -286,91 +288,157 @@ class OTreeBridge:
             )
             return False
 
-    async def wait_for_results_and_notify(
-        self, participant_code: str, participant_id: int
-    ):
-        """Wait for oTree results page and notify the participant."""
+    async def navigate_experiment(self, participant_code: str, participant_id: int):
+        """Navigate through experiment pages, handling both wait pages and action pages."""
         http_session = self.participant_sessions.get(participant_code)
         if not http_session:
             logger.error(
-                f"HTTP session not found for participant {participant_code} in wait_for_results_and_notify."
+                f"HTTP session not found for participant {participant_code} in navigate_experiment."
             )
             return
 
-        wait_url = self.participant_urls.get(participant_code)
-        if not wait_url:
-            logger.error(f"No wait URL found for participant {participant_code}")
+        current_url = self.participant_urls.get(participant_code)
+        if not current_url:
+            logger.error(f"No current URL found for participant {participant_code}")
             return
 
         try:
-            max_attempts = 10
+            max_attempts = 30  # Increased for potentially longer experiments
             for attempt in range(max_attempts):
                 logger.info(
-                    f"Checking wait page for participant {participant_code} (attempt {attempt + 1})"
+                    f"Checking page for participant {participant_code} (attempt {attempt + 1})"
                 )
 
                 response = await asyncio.to_thread(
-                    http_session.get, wait_url, allow_redirects=False, timeout=30
+                    http_session.get, current_url, allow_redirects=False, timeout=30
                 )
                 response.raise_for_status()
 
+                # Handle redirects
                 if response.is_redirect:
-                    results_url = response.headers["Location"]
-                    if not results_url.startswith("http"):
-                        results_url = f"{self.otree_url}{results_url}"
+                    next_url = response.headers["Location"]
+                    if not next_url.startswith("http"):
+                        next_url = f"{self.otree_url}{next_url}"
 
                     logger.info(
-                        f"Participant {participant_code} redirected to results: {results_url}"
+                        f"Participant {participant_code} redirected to: {next_url}"
                     )
 
-                    results_response = await asyncio.to_thread(
-                        http_session.get, results_url, timeout=10
+                    # Get the next page
+                    next_response = await asyncio.to_thread(
+                        http_session.get, next_url, timeout=10
                     )
-                    results_response.raise_for_status()
+                    next_response.raise_for_status()
 
-                    soup = BeautifulSoup(results_response.text, "html.parser")
+                    self.participant_urls[participant_code] = next_url
+
+                    # Parse the page
+                    soup = BeautifulSoup(next_response.text, "html.parser")
                     otree_data = soup.find("script", id="otree-data")
 
-                    if otree_data:
+                    # Check for form fields
+                    self.form_fields[participant_code] = []
+                    for field in soup.select("._formfield input"):
+                        field_name = field.get("name")
+                        if field_name:
+                            self.form_fields[participant_code].append(str(field_name))
+
+                    # If there are form fields, this is an action page
+                    if self.form_fields[participant_code] and otree_data:
+                        # Increment phase number
+                        self.participant_phases[participant_code] += 1
+                        phase_number = self.participant_phases[participant_code]
+
                         state_data = json.loads(otree_data.text)
-                        logger.info(f"Results data: {state_data}")
-
-                    await self.send_game_state(
-                        participant_code, participant_id, state_data
-                    )
-
-                    results_post = await asyncio.to_thread(
-                        http_session.post,
-                        results_url,
-                        data={},
-                        allow_redirects=False,
-                        timeout=10,
-                    )
-                    if results_post.is_redirect:
-                        final_url = results_post.headers["Location"]
-                        if not final_url.startswith("http"):
-                            final_url = f"{self.otree_url}{final_url}"
-                        logger.info(
-                            f"Participant {participant_code} completed experiment: {final_url}"
+                        state_data["phase"] = phase_number
+                        state_data["required_fields"] = self.form_fields[
+                            participant_code
+                        ]
+                        await self.send_phase_update(
+                            participant_code, participant_id, state_data
                         )
-                        await self.send_game_completion(participant_code)
+                        return  # Exit and wait for next action from econagents
 
-                    return
+                    # If no form fields but has state data, might be results or info page
+                    elif otree_data:
+                        state_data = json.loads(otree_data.text)
+                        logger.info(f"Page data: {state_data}")
 
+                        # For results pages, send results event
+                        await self.send_results(
+                            participant_code, participant_id, state_data
+                        )
+
+                        # Try to continue by posting empty form
+                        continue_response = await asyncio.to_thread(
+                            http_session.post,
+                            next_url,
+                            data={},
+                            allow_redirects=False,
+                            timeout=10,
+                        )
+
+                        if continue_response.is_redirect:
+                            redirect_url = continue_response.headers.get("Location")
+                            if redirect_url:
+                                if not redirect_url.startswith("http"):
+                                    redirect_url = f"{self.otree_url}{redirect_url}"
+                                self.participant_urls[participant_code] = redirect_url
+                                current_url = redirect_url
+
+                                # Check if experiment is complete
+                                if "OutOfRangeNotification" in redirect_url:
+                                    logger.info(
+                                        f"Participant {participant_code} completed experiment"
+                                    )
+                                    await self.send_game_completion(participant_code)
+                                    return
+
+                            continue  # Keep navigating
+                        else:
+                            # No redirect, might be stuck
+                            logger.warning(f"No redirect from {next_url}")
+                            return
+
+                # Handle wait pages
                 elif "oTree-Wait-Page" in response.headers:
+                    logger.info(f"Participant {participant_code} on wait page")
                     await asyncio.sleep(2)
+                    continue
+
                 else:
-                    logger.warning(
-                        f"Unexpected response from wait page for {participant_code}"
-                    )
+                    logger.warning(f"Unexpected response type for {participant_code}")
                     break
 
-            logger.warning(
-                f"Wait page polling timed out for participant {participant_code}"
-            )
+            logger.warning(f"Navigation timed out for participant {participant_code}")
 
         except Exception as e:
-            logger.exception(f"Error waiting for results for {participant_code}: {e}")
+            logger.exception(f"Error navigating experiment for {participant_code}: {e}")
+
+    async def send_phase_update(
+        self, participant_code: str, participant_id: int, state_data: dict
+    ):
+        """Send phase update to participant when entering a new action page."""
+        websocket = self.participant_connections.get(participant_code)
+        if not websocket:
+            return
+
+        message = {
+            "type": "event",
+            "eventType": "phase-transition",
+            "data": {
+                "participant_id": participant_id,
+                **state_data,
+            },
+        }
+
+        try:
+            await websocket.send(json.dumps(message))
+            logger.info(
+                f"Sent phase update to participant {participant_code}: phase={state_data.get('phase')}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to send phase update to {participant_code}: {e}")
 
     async def send_game_state(
         self, participant_code: str, participant_id: int, state_data: dict
@@ -456,6 +524,12 @@ class OTreeBridge:
             if participant_code in self.participant_urls:
                 del self.participant_urls[participant_code]
 
+            if participant_code in self.participant_phases:
+                del self.participant_phases[participant_code]
+
+            if participant_code in self.form_fields:
+                del self.form_fields[participant_code]
+
             logger.info(f"Cleaned up connection for participant {participant_code}")
 
 
@@ -469,10 +543,7 @@ async def main():
     logger.info(f"Starting oTree bridge server on {bridge_host}:{bridge_port}")
     logger.info(f"Connecting to oTree server at {otree_url}")
 
-    bridge = OTreeBridge(
-        otree_url=otree_url,
-        rounds=["InitializeParticipant", "SubmitContribution", "Results"],
-    )
+    bridge = OTreeBridge(otree_url=otree_url)
 
     async with serve(bridge.handle_websocket, bridge_host, bridge_port):
         logger.info("Bridge server running. Press Ctrl+C to stop.")
