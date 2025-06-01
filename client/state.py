@@ -14,7 +14,7 @@ class OTMeta(MetaInformation):
 
     participant_id: int = EventField(default=0, exclude_from_mapping=True)
     participant_code: str = EventField(default="", exclude_from_mapping=True)
-    phase: int = EventField(default=0, event_key="round")
+    phase: int = EventField(default=0)
 
 
 class OTPrivate(PrivateInformation):

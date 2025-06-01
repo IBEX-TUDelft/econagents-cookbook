@@ -383,9 +383,7 @@ class OTreeBridge:
                             if redirect_url:
                                 if not redirect_url.startswith("http"):
                                     redirect_url = f"{self.otree_url}{redirect_url}"
-                                self.participant_urls[participant_code] = redirect_url
-                                current_url = redirect_url
-
+                                
                                 # Check if experiment is complete
                                 if "OutOfRangeNotification" in redirect_url:
                                     logger.info(
@@ -393,6 +391,44 @@ class OTreeBridge:
                                     )
                                     await self.send_game_completion(participant_code)
                                     return
+
+                                # Fetch and parse the redirected page
+                                redirect_response = await asyncio.to_thread(
+                                    http_session.get, redirect_url, timeout=10
+                                )
+                                redirect_response.raise_for_status()
+
+                                self.participant_urls[participant_code] = redirect_url
+
+                                # Parse the redirected page
+                                redirect_soup = BeautifulSoup(redirect_response.text, "html.parser")
+                                redirect_otree_data = redirect_soup.find("script", id="otree-data")
+
+                                # Check for form fields in the redirected page
+                                self.form_fields[participant_code] = []
+                                for field in redirect_soup.select("._formfield input"):
+                                    field_name = field.get("name")
+                                    if field_name:
+                                        self.form_fields[participant_code].append(str(field_name))
+
+                                # If the redirected page has form fields, it's a new task page
+                                if self.form_fields[participant_code] and redirect_otree_data:
+                                    # Increment phase number
+                                    self.participant_phases[participant_code] += 1
+                                    phase_number = self.participant_phases[participant_code]
+
+                                    redirect_state_data = json.loads(redirect_otree_data.text)
+                                    redirect_state_data["phase"] = phase_number
+                                    redirect_state_data["required_fields"] = self.form_fields[
+                                        participant_code
+                                    ]
+                                    await self.send_phase_update(
+                                        participant_code, participant_id, redirect_state_data
+                                    )
+                                    return  # Exit and wait for next action from econagents
+
+                                # If not a task page, update current_url and continue navigating
+                                current_url = redirect_url
 
                             continue  # Keep navigating
                         else:

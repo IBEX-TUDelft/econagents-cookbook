@@ -24,6 +24,8 @@ async def main():
     logger.info(
         f"Successfully created oTree session {session_code} with {len(participant_configs)} participants"
     )
+    for file in Path(__file__).parent.glob("logs/*.log"):
+        file.unlink()
 
     config = TurnBasedGameRunnerConfig(
         game_id=1,

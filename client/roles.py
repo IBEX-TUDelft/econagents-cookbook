@@ -15,9 +15,9 @@ class PublicGoodsPlayer(AgentRole):
 
     role = 1
     name = "Player"
-    llm = ChatOpenAI(model_name="gpt-4o-mini")
+    llm = ChatOpenAI(model_name="gpt-4.1-mini")
 
-    task_phases = [1]
+    task_phases = [1, 2, 3]
 
 
 class PublicGoodsManager(TurnBasedPhaseManager):
