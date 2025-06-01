@@ -1,8 +1,9 @@
 import asyncio
 import json
 import logging
-from typing import Dict, Optional, Set
+from typing import Dict, List, Optional, Set
 
+from bs4 import BeautifulSoup
 import requests
 import websockets
 from websockets.asyncio.server import serve, ServerConnection
@@ -19,14 +20,18 @@ class OTreeBridge:
     """Bridge server that connects econagents WebSocket clients to oTree HTTP API."""
 
     def __init__(
-        self, otree_url: str = "http://localhost:8000", rest_key: Optional[str] = None
+        self,
+        rounds: List[str],
+        otree_url: str = "http://localhost:8000",
     ):
         self.otree_url = otree_url
-        self.rest_key = rest_key
         self.sessions: Dict[str, Dict] = {}
         self.participant_connections: Dict[str, ServerConnection] = {}
         self.participant_sessions: Dict[str, requests.Session] = {}
+        self.participant_urls: Dict[str, str] = {}
         self.session_participants: Dict[str, Set[str]] = {}
+        self.form_fields: Dict[str, List[str]] = {}
+        self.rounds = rounds
 
     async def handle_websocket(self, websocket: ServerConnection):
         """Handle incoming WebSocket connections from econagents clients."""
@@ -49,7 +54,6 @@ class OTreeBridge:
                 f"WebSocket connection closed for participant {participant_code}"
             )
         finally:
-            # Clean up participant connection
             await self.cleanup_connection(websocket, participant_code)
 
     async def process_message(
@@ -61,19 +65,27 @@ class OTreeBridge:
 
         if msg_type == "join":
             participant_code = await self.handle_join(websocket, data)
-        elif msg_type == "contribution":
-            participant_code = data.get("participant_code")
-            await self.handle_contribution(websocket, data)
         else:
-            await self.send_error(websocket, f"Unknown message type: {msg_type}")
+            participant_code = data.get("participant_code")
+            await self.handle_task(websocket, data)
 
         return participant_code
 
     async def handle_join(self, websocket: ServerConnection, data: dict) -> str:
-        """Handle participant joining."""
+        """Handle participant joining using the participant_code provided by the client."""
+        participant_code = data.get("participant_code")
+        participant_id = data.get("participant_id")
+
+        if not participant_code or participant_id is None:
+            error_msg = "Participant code and ID are required for join message."
+            logger.error(error_msg)
+            await self.send_error(websocket, error_msg)
+            return ""
+
         try:
-            participant_code = data.get("participant_code")
-            participant_id = data.get("participant_id")
+            logger.info(
+                f"Handling join for participant_code: {participant_code}, participant_id: {participant_id}"
+            )
 
             self.participant_connections[participant_code] = websocket
 
@@ -83,38 +95,50 @@ class OTreeBridge:
 
             await self.initialize_participant(participant_code, participant_id)
 
-            logger.info(f"Participant {participant_id} joined as {participant_code}")
+            logger.info(
+                f"Participant {participant_id} (code: {participant_code}) successfully joined and initialized."
+            )
             return participant_code
 
         except Exception as e:
-            logger.exception(f"Error in handle_join: {e}")
-            await self.send_error(websocket, f"Failed to join: {str(e)}")
+            logger.exception(
+                f"Error in handle_join for participant_code {participant_code}: {e}"
+            )
+            await self.send_error(websocket, f"Error during join process: {str(e)}")
+            if participant_code in self.participant_connections:
+                del self.participant_connections[participant_code]
+            if participant_code in self.participant_sessions:
+                del self.participant_sessions[participant_code]
             return ""
 
-    async def handle_contribution(self, websocket: ServerConnection, data: dict):
-        """Handle contribution submission to oTree."""
-        participant_code = data.get("participant_code")
-        participant_id = data.get("participant_id")
-        contribution = data.get("contribution")
+    async def handle_task(self, websocket: ServerConnection, data: dict):
+        """Handle task submission to oTree."""
+        participant_code = data["participant_code"]
+        participant_id = data["participant_id"]
+        task_data = {}
+        for f in self.form_fields.get(participant_code, []):
+            task_data[f] = data.get(f)
 
         if not all(
-            [participant_code, participant_id is not None, contribution is not None]
+            [participant_code, participant_id is not None, task_data is not None]
         ):
-            await self.send_error(websocket, "Missing required fields for contribution")
+            await self.send_error(websocket, "Missing required fields for task")
             return
 
         try:
-            # Submit contribution to oTree
-            success = await self.submit_contribution_to_otree(
-                participant_code, contribution
+            success = await self.submit_task_to_otree(
+                participant_code,  # type: ignore
+                task_data,  # type: ignore
             )
 
             if success:
                 logger.info(
-                    f"Contribution {contribution} submitted for participant {participant_code}"
+                    f"Task {task_data} submitted for participant {participant_code}"
                 )
-                # Wait for results and notify client
-                await self.wait_for_results_and_notify(participant_code, participant_id)
+                await self.wait_for_results_and_notify(
+                    participant_code,
+                    participant_id,  # type: ignore
+                )
             else:
                 await self.send_error(websocket, "Failed to submit contribution")
 
@@ -122,44 +146,98 @@ class OTreeBridge:
             logger.exception(f"Error handling contribution: {e}")
             await self.send_error(websocket, f"Error submitting contribution: {str(e)}")
 
-    async def initialize_participant(self, participant_code: str, participant_id: int):
-        """Initialize participant in oTree and navigate to the contribution page."""
-        http_session = self.participant_sessions[participant_code]
+    def get_participant_configs(self, session_code: str) -> list:
+        """Get participant configurations for econagents from the most recent or specified session."""
+        session_info = self.sessions[session_code]
+        return [
+            {
+                "participant_code": p["code"],
+                "participant_id": p["id_in_session"],
+            }
+            for p in session_info["participants_info"]
+        ]
+
+    async def continue_to_next_page(
+        self,
+        http_session: requests.Session,
+        participant_code: str,
+        participant_id: int,
+        url: str,
+    ):
+        """Continue to the next page for the participant."""
+        response = await asyncio.to_thread(
+            http_session.get, url, allow_redirects=False, timeout=10
+        )
+        response.raise_for_status()
+
+        if not response.is_redirect:
+            raise Exception(f"Expected redirect from {url}, got {response.status_code}")
+
+        task_url = response.headers["Location"]
+
+        if not task_url.startswith("http"):
+            task_url = f"{self.otree_url}{task_url}"
+
+        logger.info(
+            f"Participant {participant_code} redirected to task page: {task_url}"
+        )
+        response_task = await asyncio.to_thread(
+            http_session.get, task_url, allow_redirects=False, timeout=10
+        )
+        response_task.raise_for_status()
+
+        if not hasattr(self, "participant_urls"):
+            self.participant_urls = {}
+        self.participant_urls[participant_code] = task_url
+
+        if not hasattr(self, "form_fields"):
+            self.form_fields = {}
+        self.form_fields[participant_code] = []
+
+        soup = BeautifulSoup(response_task.text, "html.parser")
+        otree_data = soup.find("script", id="otree-data")
+
+        for field in soup.select("._formfield input"):
+            self.form_fields[participant_code].append(field.get("name"))  # type: ignore
 
         try:
-            # Initialize participant
-            init_url = f"{self.otree_url}/InitializeParticipant/{participant_code}"
-            logger.info(f"Initializing participant {participant_code} at {init_url}")
+            round_number = self.rounds.index(url.split("/")[-2]) + 1
+        except ValueError:
+            logger.error(f"Unknown round: {url.split('/')[-2]}")
+            round_number = 0
 
-            response = http_session.get(init_url, allow_redirects=False, timeout=10)
-            response.raise_for_status()
+        if otree_data:
+            state_data = otree_data.text
+            state_data = json.loads(state_data)
+            state_data["round"] = round_number
+            await self.send_game_state(participant_code, participant_id, state_data)
 
-            if not response.is_redirect:
-                raise Exception(
-                    f"Expected redirect from {init_url}, got {response.status_code}"
-                )
-
-            # Navigate to contribution page
-            contrib_url = response.headers["Location"]
-            if not contrib_url.startswith("http"):
-                contrib_url = f"{self.otree_url}{contrib_url}"
-
-            logger.info(
-                f"Participant {participant_code} redirected to contribution page: {contrib_url}"
+    async def initialize_participant(self, participant_code: str, participant_id: int):
+        """Initialize participant in oTree and navigate to the contribution page."""
+        http_session = self.participant_sessions.get(participant_code)
+        if not http_session:
+            logger.error(
+                f"HTTP session not found for participant {participant_code} in initialize_participant."
+            )
+            raise ValueError(
+                f"HTTP Session not found for participant {participant_code}"
             )
 
-            if not hasattr(self, "participant_urls"):
-                self.participant_urls = {}
-            self.participant_urls[participant_code] = contrib_url
-
-            await self.send_game_state(participant_code, participant_id)
-
+        try:
+            init_url = f"{self.otree_url}/InitializeParticipant/{participant_code}"
+            logger.info(f"Initializing participant {participant_code} at {init_url}")
+            await self.continue_to_next_page(
+                http_session,
+                participant_code,
+                participant_id,
+                init_url,
+            )
         except Exception as e:
             logger.exception(f"Error initializing participant {participant_code}: {e}")
             raise
 
-    async def submit_contribution_to_otree(
-        self, participant_code: str, contribution: int
+    async def submit_task_to_otree(
+        self, participant_code: str, task_data: dict
     ) -> bool:
         """Submit contribution to oTree for the participant."""
         http_session = self.participant_sessions[participant_code]
@@ -167,19 +245,21 @@ class OTreeBridge:
 
         if not contrib_url:
             logger.error(
-                f"No contribution URL found for participant {participant_code}"
+                f"HTTP session not found for participant {participant_code} in submit_contribution_to_otree."
             )
             return False
 
         try:
             logger.info(
-                f"Submitting contribution {contribution} for participant {participant_code}"
+                f"Submitting task {task_data} for participant {participant_code}"
             )
 
-            # Submit contribution
-            payload = {"contribution": contribution}
-            response = http_session.post(
-                contrib_url, data=payload, allow_redirects=False, timeout=10
+            response = await asyncio.to_thread(
+                http_session.post,
+                contrib_url,
+                data=task_data,
+                allow_redirects=False,
+                timeout=10,
             )
             response.raise_for_status()
 
@@ -189,7 +269,6 @@ class OTreeBridge:
                 )
                 return False
 
-            # Navigate to wait page
             wait_url = response.headers["Location"]
             if not wait_url.startswith("http"):
                 wait_url = f"{self.otree_url}{wait_url}"
@@ -211,26 +290,31 @@ class OTreeBridge:
         self, participant_code: str, participant_id: int
     ):
         """Wait for oTree results page and notify the participant."""
-        http_session = self.participant_sessions[participant_code]
-        wait_url = self.participant_urls.get(participant_code)
+        http_session = self.participant_sessions.get(participant_code)
+        if not http_session:
+            logger.error(
+                f"HTTP session not found for participant {participant_code} in wait_for_results_and_notify."
+            )
+            return
 
+        wait_url = self.participant_urls.get(participant_code)
         if not wait_url:
             logger.error(f"No wait URL found for participant {participant_code}")
             return
 
         try:
-            # Poll the wait page until it redirects to results
             max_attempts = 10
             for attempt in range(max_attempts):
                 logger.info(
                     f"Checking wait page for participant {participant_code} (attempt {attempt + 1})"
                 )
 
-                response = http_session.get(wait_url, allow_redirects=False, timeout=30)
+                response = await asyncio.to_thread(
+                    http_session.get, wait_url, allow_redirects=False, timeout=30
+                )
                 response.raise_for_status()
 
                 if response.is_redirect:
-                    # Wait page completed, redirect to results
                     results_url = response.headers["Location"]
                     if not results_url.startswith("http"):
                         results_url = f"{self.otree_url}{results_url}"
@@ -239,17 +323,28 @@ class OTreeBridge:
                         f"Participant {participant_code} redirected to results: {results_url}"
                     )
 
-                    # Get results page
-                    results_response = http_session.get(results_url, timeout=10)
+                    results_response = await asyncio.to_thread(
+                        http_session.get, results_url, timeout=10
+                    )
                     results_response.raise_for_status()
 
-                    # Parse results from the page (simplified - in real implementation you'd parse HTML)
-                    # For now, send a mock results event
-                    await self.send_results(participant_code, participant_id)
+                    soup = BeautifulSoup(results_response.text, "html.parser")
+                    otree_data = soup.find("script", id="otree-data")
 
-                    # Navigate through results page
-                    results_post = http_session.post(
-                        results_url, data={}, allow_redirects=False, timeout=10
+                    if otree_data:
+                        state_data = json.loads(otree_data.text)
+                        logger.info(f"Results data: {state_data}")
+
+                    await self.send_game_state(
+                        participant_code, participant_id, state_data
+                    )
+
+                    results_post = await asyncio.to_thread(
+                        http_session.post,
+                        results_url,
+                        data={},
+                        allow_redirects=False,
+                        timeout=10,
                     )
                     if results_post.is_redirect:
                         final_url = results_post.headers["Location"]
@@ -258,14 +353,11 @@ class OTreeBridge:
                         logger.info(
                             f"Participant {participant_code} completed experiment: {final_url}"
                         )
-
-                        # Send game completion event
                         await self.send_game_completion(participant_code)
 
                     return
 
                 elif "oTree-Wait-Page" in response.headers:
-                    # Still on wait page, wait and retry
                     await asyncio.sleep(2)
                 else:
                     logger.warning(
@@ -280,7 +372,9 @@ class OTreeBridge:
         except Exception as e:
             logger.exception(f"Error waiting for results for {participant_code}: {e}")
 
-    async def send_game_state(self, participant_code: str, participant_id: int):
+    async def send_game_state(
+        self, participant_code: str, participant_id: int, state_data: dict
+    ):
         """Send initial game state to participant."""
         websocket = self.participant_connections.get(participant_code)
         if not websocket:
@@ -291,9 +385,7 @@ class OTreeBridge:
             "eventType": "round-started",
             "data": {
                 "participant_id": participant_id,
-                "endowment": 100,
-                "num_players": 3,
-                "round": 1,
+                **state_data,
             },
         }
 
@@ -303,23 +395,18 @@ class OTreeBridge:
         except Exception as e:
             logger.error(f"Failed to send game state to {participant_code}: {e}")
 
-    async def send_results(self, participant_code: str, participant_id: int):
+    async def send_results(
+        self, participant_code: str, participant_id: int, results_data: dict
+    ):
         """Send results to participant."""
         websocket = self.participant_connections.get(participant_code)
         if not websocket:
             return
 
-        # Mock results - in real implementation, parse from oTree results page
         message = {
             "type": "event",
             "eventType": "round-result",
-            "data": {
-                "participant_id": participant_id,
-                "total_contribution": 150,  # Mock data
-                "individual_share": 100.0,  # Mock data
-                "your_contribution": 50,  # Mock data
-                "final_payoff": 150,  # Mock data
-            },
+            "data": results_data,
         }
 
         try:
@@ -359,20 +446,14 @@ class OTreeBridge:
     ):
         """Clean up participant connection."""
         if participant_code:
-            # Remove from active connections
             if participant_code in self.participant_connections:
                 del self.participant_connections[participant_code]
 
-            # Clean up HTTP session
             if participant_code in self.participant_sessions:
                 self.participant_sessions[participant_code].close()
                 del self.participant_sessions[participant_code]
 
-            # Clean up URLs
-            if (
-                hasattr(self, "participant_urls")
-                and participant_code in self.participant_urls
-            ):
+            if participant_code in self.participant_urls:
                 del self.participant_urls[participant_code]
 
             logger.info(f"Cleaned up connection for participant {participant_code}")
@@ -384,12 +465,14 @@ async def main():
     bridge_host = "localhost"
     bridge_port = 8765
     otree_url = "http://localhost:8000"
-    rest_key = None
 
     logger.info(f"Starting oTree bridge server on {bridge_host}:{bridge_port}")
     logger.info(f"Connecting to oTree server at {otree_url}")
 
-    bridge = OTreeBridge(otree_url=otree_url, rest_key=rest_key)
+    bridge = OTreeBridge(
+        otree_url=otree_url,
+        rounds=["InitializeParticipant", "SubmitContribution", "Results"],
+    )
 
     async with serve(bridge.handle_websocket, bridge_host, bridge_port):
         logger.info("Bridge server running. Press Ctrl+C to stop.")

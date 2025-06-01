@@ -5,7 +5,7 @@ class C(BaseConstants):
     NAME_IN_URL = "public_goods_simple"
     PLAYERS_PER_GROUP = 3
     NUM_ROUNDS = 1
-    ENDOWMENT = cu(100)
+    ENDOWMENT = 100
     MULTIPLIER = 1.8
 
 
@@ -14,12 +14,12 @@ class Subsession(BaseSubsession):
 
 
 class Group(BaseGroup):
-    total_contribution = models.CurrencyField()
-    individual_share = models.CurrencyField()
+    total_contribution = models.IntegerField()
+    individual_share = models.FloatField()
 
 
 class Player(BasePlayer):
-    contribution = models.CurrencyField(
+    contribution = models.IntegerField(
         min=0, max=C.ENDOWMENT, label="How much will you contribute?"
     )
 

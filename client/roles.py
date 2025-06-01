@@ -34,7 +34,7 @@ class PublicGoodsManager(TurnBasedPhaseManager):
         }
 
         super().__init__(
-            url="ws://localhost:8765",  # Bridge server URL
+            url="ws://localhost:8765",
             auth_mechanism_kwargs=auth_kwargs,
             state=OTGameState(
                 participant_id=participant_id,

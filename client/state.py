@@ -20,7 +20,7 @@ class OTMeta(MetaInformation):
 class OTPrivate(PrivateInformation):
     """Private information for the oTree public goods game."""
 
-    endowment: int = EventField(default=100, exclude_from_mapping=True)
+    endowment: int = EventField(default=100)
     contribution_made: int = EventField(default=0, event_key="your_contribution")
 
 
@@ -28,7 +28,9 @@ class OTPublic(PublicInformation):
     """Public information for the oTree public goods game."""
 
     num_players: int = EventField(default=3)
-    total_contribution: int = EventField(default=0)
+    total_contribution: int = EventField(
+        default=0, event_key="group_total_contribution"
+    )
     individual_share: float = EventField(default=0.0)
 
 

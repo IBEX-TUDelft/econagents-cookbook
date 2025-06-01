@@ -2,7 +2,7 @@
 {{ block content }}
 
     <p>
-        You started with an endowment of {{ C.ENDOWMENT }},
+        You started with an endowment of {{ C.ENDOWMENT }} points,
         of which you contributed {{ player.contribution }}.
         Your group contributed {{ group.total_contribution }},
         resulting in an individual share of {{ group.individual_share }}.
@@ -16,8 +16,7 @@
         "endowment": {{ C.ENDOWMENT }},
         "player_contribution": {{ player.contribution }},
         "group_total_contribution": {{ group.total_contribution }},
-        "individual_share": {{ group.individual_share }},
-        "player_payoff": {{ player.payoff }}
+        "individual_share": {{ group.individual_share }}
     }
     </script>
 
