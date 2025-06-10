@@ -10,6 +10,3 @@ dependencies = [
     "jinja2>=3.1.6",
     "python-dotenv>=1.1.0",
 ]
-
-[tool.uv.sources]
-econagents = { path = "../../economic-agents" }

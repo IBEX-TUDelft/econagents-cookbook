@@ -193,7 +193,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.13.4" },
-    { name = "econagents", extras = ["all"], directory = "../../economic-agents" },
+    { name = "econagents", extras = ["all"], specifier = ">=0.0.5" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "python-dotenv", specifier = ">=1.1.0" },
 ]
@@ -218,11 +218,16 @@ wheels = [
 
 [[package]]
 name = "econagents"
-source = { directory = "../../economic-agents" }
+version = "0.0.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "requests" },
     { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/93/a6/904e2b3c7ea4f13179b9b37a96fdc12d86a98fb1da2e2d227244d84ca7c4/econagents-0.0.5.tar.gz", hash = "sha256:632e68cd0b18d79657892bb11adab558eda616297d5acbdedbad9a765147bb20", size = 26091 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/5e/e09bfa988240f7af40c4465bbafb8cae9b2398c5c9b2ca1947302534e518/econagents-0.0.5-py3-none-any.whl", hash = "sha256:a66767b3734cec412b863b0a73d4e649e778bac82c661e42a1f3b91e10deea7a", size = 32379 },
 ]
 
 [package.optional-dependencies]
@@ -232,18 +237,6 @@ all = [
     { name = "ollama" },
     { name = "openai" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "langfuse", marker = "extra == 'all' or extra == 'langfuse'", specifier = ">=2.60.7,<3.0.0" },
-    { name = "langsmith", marker = "extra == 'all' or extra == 'langsmith' or extra == 'standard'", specifier = ">=0.3.43,<0.4.0" },
-    { name = "ollama", marker = "extra == 'all' or extra == 'ollama'", specifier = ">=0.5.1,<0.6.0" },
-    { name = "openai", marker = "extra == 'all' or extra == 'openai' or extra == 'standard'", specifier = ">=1.82.1,<2.0.0" },
-    { name = "pydantic", specifier = ">=2.11.5,<3.0.0" },
-    { name = "requests", specifier = ">=2.32.3,<3.0.0" },
-    { name = "websockets", specifier = ">=15.0,<16.0" },
-]
-provides-extras = ["all", "langfuse", "langsmith", "ollama", "openai", "standard"]
 
 [[package]]
 name = "exceptiongroup"
@@ -484,15 +477,15 @@ wheels = [
 
 [[package]]
 name = "ollama"
-version = "0.5.1"
+version = "0.4.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/96/c7fe0d2d1b3053be614822a7b722c7465161b3672ce90df71515137580a0/ollama-0.5.1.tar.gz", hash = "sha256:5a799e4dc4e7af638b11e3ae588ab17623ee019e496caaf4323efbaa8feeff93", size = 41112 }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/4d/f46ff3d124ce0805cf728a443cfb0227beb025256cb9276a6f71521c19bd/ollama-0.4.9.tar.gz", hash = "sha256:5266d4d29b5089a01489872b8e8f980f018bccbdd1082b3903448af1d5615ce7", size = 40875 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/76/3f96c8cdbf3955d7a73ee94ce3e0db0755d6de1e0098a70275940d1aff2f/ollama-0.5.1-py3-none-any.whl", hash = "sha256:4c8839f35bc173c7057b1eb2cbe7f498c1a7e134eafc9192824c8aecb3617506", size = 13369 },
+    { url = "https://files.pythonhosted.org/packages/ee/b6/0c40493c0505652d3da58ad048be19f00c4bdf587140cc578a770d2029d4/ollama-0.4.9-py3-none-any.whl", hash = "sha256:18c8c85358c54d7f73d6a66cda495b0e3ba99fdb88f824ae470d740fbb211a50", size = 13303 },
 ]
 
 [[package]]
